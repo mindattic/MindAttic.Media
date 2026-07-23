@@ -4,3 +4,4 @@ obj/
 .vs/
 *.suo
 .idea/
+.claude/checkpoint.md
