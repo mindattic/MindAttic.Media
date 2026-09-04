@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/MindAttic.Media.Azure/MindAttic.Media.Azure.csproj" />
+    <Project Path="src/MindAttic.Media.Tests/MindAttic.Media.Tests.csproj" />
     <Project Path="src/MindAttic.Media/MindAttic.Media.csproj" />
   </Folder>
 </Solution>

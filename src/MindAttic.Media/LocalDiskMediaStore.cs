@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -28,29 +27,26 @@ public sealed class LocalDiskMediaStore<TContext> : IMediaStore where TContext :
         CancellationToken ct = default)
     {
         var uid = Guid.NewGuid();
-        var safeName = SanitizeFileName(fileName);
+        var safeName = MediaNaming.SanitizeFileName(fileName);
         var now = DateTime.UtcNow;
+        var path = Path.Combine(options.MediaRoot, uid.ToString("N"), safeName);
 
-        using var ms = new MemoryStream();
-        await content.CopyToAsync(ms, ct);
-        var bytes = ms.ToArray();
+        byte[]? inlineBytes;
+        string? blobUri;
+        string sha256;
+        long size;
 
-        var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-
-        byte[]? inlineBytes = null;
-        string? blobUri = null;
-
-        if (bytes.Length <= options.InlineThresholdBytes)
+        var sink = new ThresholdSpillStream(options.InlineThresholdBytes, () =>
         {
-            inlineBytes = bytes;
-        }
-        else
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            return File.Create(path);
+        });
+
+        await using (sink)
         {
-            var dir = Path.Combine(options.MediaRoot, uid.ToString("N"));
-            Directory.CreateDirectory(dir);
-            var path = Path.Combine(dir, safeName);
-            await File.WriteAllBytesAsync(path, bytes, ct);
-            blobUri = path;
+            (sha256, size) = await MediaStreams.CopyAndHashAsync(content, sink, options.CopyBufferSize, ct);
+            inlineBytes = sink.InlineBytes;
+            blobUri = sink.Spilled ? path : null;
         }
 
         var item = new MediaItem
@@ -61,7 +57,7 @@ public sealed class LocalDiskMediaStore<TContext> : IMediaStore where TContext :
             Folder = folder,
             FileName = safeName,
             ContentType = contentType,
-            SizeBytes = bytes.Length,
+            SizeBytes = size,
             Sha256 = sha256,
             Bytes = inlineBytes,
             BlobUri = blobUri,
@@ -95,15 +91,17 @@ public sealed class LocalDiskMediaStore<TContext> : IMediaStore where TContext :
         return await q.OrderByDescending(m => m.CreatedUtc).ToListAsync(ct);
     }
 
+    public Task<MediaItem?> GetMetaAsync(Guid uid, CancellationToken ct = default) =>
+        context.Set<MediaItem>().FirstOrDefaultAsync(m => m.Uid == uid && !m.IsDeleted, ct);
+
     public async Task<(MediaItem Meta, Stream Content)?> GetAsync(Guid uid, CancellationToken ct = default)
     {
-        var item = await context.Set<MediaItem>()
-            .FirstOrDefaultAsync(m => m.Uid == uid && !m.IsDeleted, ct);
+        var item = await GetMetaAsync(uid, ct);
 
         if (item == null) return null;
 
         if (item.Bytes != null)
-            return (item, new MemoryStream(item.Bytes));
+            return (item, new MemoryStream(item.Bytes, writable: false));
 
         if (item.BlobUri != null && File.Exists(item.BlobUri))
             return (item, File.OpenRead(item.BlobUri));
@@ -113,8 +111,7 @@ public sealed class LocalDiskMediaStore<TContext> : IMediaStore where TContext :
 
     public async Task<bool> DeleteAsync(Guid uid, CancellationToken ct = default)
     {
-        var item = await context.Set<MediaItem>()
-            .FirstOrDefaultAsync(m => m.Uid == uid && !m.IsDeleted, ct);
+        var item = await GetMetaAsync(uid, ct);
 
         if (item == null) return false;
 
@@ -122,13 +119,5 @@ public sealed class LocalDiskMediaStore<TContext> : IMediaStore where TContext :
         item.DeletedUtc = DateTime.UtcNow;
         await context.SaveChangesAsync(ct);
         return true;
-    }
-
-    static string SanitizeFileName(string fileName)
-    {
-        var name = Path.GetFileName(fileName);
-        foreach (var c in Path.GetInvalidFileNameChars())
-            name = name.Replace(c, '_');
-        return string.IsNullOrWhiteSpace(name) ? "file" : name;
     }
 }

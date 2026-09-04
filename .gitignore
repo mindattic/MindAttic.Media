@@ -5,3 +5,4 @@ obj/
 *.suo
 .idea/
 .claude/quicksave.md
+artifacts/

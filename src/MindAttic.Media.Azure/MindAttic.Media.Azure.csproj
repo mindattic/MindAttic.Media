@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>true</IsPackable>
-    <Version>1.0.0</Version>
+    <Version>2.0.0</Version>
     <Authors>MindAttic</Authors>
     <Description>Azure Blob Storage backend for MindAttic.Media. Provides AzureBlobMediaStore implementing IMediaStore.</Description>
   </PropertyGroup>

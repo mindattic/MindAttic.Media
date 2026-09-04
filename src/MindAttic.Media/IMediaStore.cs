@@ -20,6 +20,13 @@ public interface IMediaStore
         string? mediaType = null,
         CancellationToken ct = default);
 
+    /// <summary>
+    /// The catalog row alone, with no payload fetched. Callers that only need to decide how to serve
+    /// an item — redirect, 304, or stream — must use this rather than <see cref="GetAsync"/>, which
+    /// would pull the whole blob down just to throw it away.
+    /// </summary>
+    Task<MediaItem?> GetMetaAsync(Guid uid, CancellationToken ct = default);
+
     Task<(MediaItem Meta, Stream Content)?> GetAsync(Guid uid, CancellationToken ct = default);
 
     Task<bool> DeleteAsync(Guid uid, CancellationToken ct = default);

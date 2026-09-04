@@ -1,6 +1,5 @@
-using System.Security.Cryptography;
-using Azure.Identity;
 using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
@@ -10,29 +9,13 @@ public sealed class AzureBlobMediaStore<TContext> : IMediaStore where TContext :
 {
     readonly TContext context;
     readonly AzureMediaOptions options;
-    readonly Lazy<BlobContainerClient> container;
+    readonly AzureBlobContainerFactory containers;
 
-    public AzureBlobMediaStore(TContext context, IOptions<AzureMediaOptions> options)
+    public AzureBlobMediaStore(TContext context, IOptions<AzureMediaOptions> options, AzureBlobContainerFactory containers)
     {
         this.context = context;
         this.options = options.Value;
-        container = new Lazy<BlobContainerClient>(BuildContainerClient);
-    }
-
-    BlobContainerClient BuildContainerClient()
-    {
-        BlobServiceClient service;
-
-        if (!string.IsNullOrEmpty(options.ConnectionString))
-            service = new BlobServiceClient(options.ConnectionString);
-        else if (options.BlobServiceUri != null)
-            service = new BlobServiceClient(options.BlobServiceUri, new DefaultAzureCredential());
-        else
-            throw new InvalidOperationException("AzureMediaOptions requires either ConnectionString or BlobServiceUri.");
-
-        var client = service.GetBlobContainerClient(options.ContainerName);
-        client.CreateIfNotExists();
-        return client;
+        this.containers = containers;
     }
 
     public async Task<MediaItem> UploadAsync(
@@ -48,19 +31,26 @@ public sealed class AzureBlobMediaStore<TContext> : IMediaStore where TContext :
         CancellationToken ct = default)
     {
         var uid = Guid.NewGuid();
-        var safeName = SanitizeFileName(fileName);
+        var safeName = MediaNaming.SanitizeFileName(fileName);
         var now = DateTime.UtcNow;
 
-        using var ms = new MemoryStream();
-        await content.CopyToAsync(ms, ct);
-        var bytes = ms.ToArray();
-        var sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var blob = containers.Container.GetBlobClient(AzureBlobNaming.BlobNameFor(uid, safeName));
 
-        var blobName = $"{uid:N}/{safeName}";
-        ms.Position = 0;
+        // OpenWriteAsync + our own copy loop, rather than UploadAsync(stream): it guarantees a single
+        // sequential pass over the source, so the hash we compute in flight is the hash of what landed,
+        // and a multi-gigabyte video never sits in memory.
+        string sha256;
+        long size;
+        var writeOptions = new BlobOpenWriteOptions
+        {
+            BufferSize = options.UploadBlockSizeBytes,
+            HttpHeaders = new BlobHttpHeaders { ContentType = contentType }
+        };
 
-        var blob = container.Value.GetBlobClient(blobName);
-        await blob.UploadAsync(ms, overwrite: true, cancellationToken: ct);
+        await using (var destination = await blob.OpenWriteAsync(overwrite: true, writeOptions, ct))
+        {
+            (sha256, size) = await MediaStreams.CopyAndHashAsync(content, destination, options.CopyBufferSize, ct);
+        }
 
         var item = new MediaItem
         {
@@ -70,7 +60,7 @@ public sealed class AzureBlobMediaStore<TContext> : IMediaStore where TContext :
             Folder = folder,
             FileName = safeName,
             ContentType = contentType,
-            SizeBytes = bytes.Length,
+            SizeBytes = size,
             Sha256 = sha256,
             Bytes = null,
             BlobUri = blob.Uri.ToString(),
@@ -104,30 +94,34 @@ public sealed class AzureBlobMediaStore<TContext> : IMediaStore where TContext :
         return await q.OrderByDescending(m => m.CreatedUtc).ToListAsync(ct);
     }
 
+    public Task<MediaItem?> GetMetaAsync(Guid uid, CancellationToken ct = default) =>
+        context.Set<MediaItem>().FirstOrDefaultAsync(m => m.Uid == uid && !m.IsDeleted, ct);
+
     public async Task<(MediaItem Meta, Stream Content)?> GetAsync(Guid uid, CancellationToken ct = default)
     {
-        var item = await context.Set<MediaItem>()
-            .FirstOrDefaultAsync(m => m.Uid == uid && !m.IsDeleted, ct);
+        var item = await GetMetaAsync(uid, ct);
 
         if (item == null) return null;
 
         if (item.Bytes != null)
-            return (item, new MemoryStream(item.Bytes));
+            return (item, new MemoryStream(item.Bytes, writable: false));
 
-        if (item.BlobUri != null)
-        {
-            var blob = new BlobClient(new Uri(item.BlobUri), new DefaultAzureCredential());
-            var download = await blob.DownloadStreamingAsync(cancellationToken: ct);
-            return (item, download.Value.Content);
-        }
+        if (item.BlobUri == null) return null;
 
-        return null;
+        // Resolve through the configured container rather than re-authenticating the stored URI: a
+        // connection-string deployment has no DefaultAzureCredential to fall back on.
+        var blob = containers.Container.GetBlobClient(AzureBlobNaming.BlobNameFor(item));
+        var download = await blob.DownloadStreamingAsync(cancellationToken: ct);
+        return (item, download.Value.Content);
     }
 
+    /// <summary>
+    /// Soft-delete only (HOUSE-LAW-2): the row is marked deleted and the blob is left in place, so a
+    /// mistaken delete stays recoverable. Reclaiming storage is a deliberate, separate operation.
+    /// </summary>
     public async Task<bool> DeleteAsync(Guid uid, CancellationToken ct = default)
     {
-        var item = await context.Set<MediaItem>()
-            .FirstOrDefaultAsync(m => m.Uid == uid && !m.IsDeleted, ct);
+        var item = await GetMetaAsync(uid, ct);
 
         if (item == null) return false;
 
@@ -135,13 +129,5 @@ public sealed class AzureBlobMediaStore<TContext> : IMediaStore where TContext :
         item.DeletedUtc = DateTime.UtcNow;
         await context.SaveChangesAsync(ct);
         return true;
-    }
-
-    static string SanitizeFileName(string fileName)
-    {
-        var name = Path.GetFileName(fileName);
-        foreach (var c in Path.GetInvalidFileNameChars())
-            name = name.Replace(c, '_');
-        return string.IsNullOrWhiteSpace(name) ? "file" : name;
     }
 }
