@@ -17,7 +17,7 @@ public sealed class AzureBlobContainerFactory
     public AzureBlobContainerFactory(IOptions<AzureMediaOptions> options)
     {
         this.options = options.Value;
-        clients = new Lazy<(BlobServiceClient, BlobContainerClient)>(Build, isThreadSafe: true);
+        clients = new Lazy<(BlobServiceClient, BlobContainerClient)>(Build, LazyThreadSafetyMode.PublicationOnly);
     }
 
     public BlobContainerClient Container => clients.Value.Container;

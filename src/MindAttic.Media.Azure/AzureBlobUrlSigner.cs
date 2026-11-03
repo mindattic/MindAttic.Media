@@ -14,6 +14,7 @@ public sealed class AzureBlobUrlSigner : IMediaUrlSigner
 {
     static readonly TimeSpan ClockSkew = TimeSpan.FromMinutes(5);
     static readonly TimeSpan DelegationKeyLifetime = TimeSpan.FromHours(6);
+    static readonly TimeSpan MaxDelegationKeyLifetime = TimeSpan.FromDays(7);
 
     readonly AzureMediaOptions options;
     readonly AzureBlobContainerFactory containers;
@@ -42,9 +43,13 @@ public sealed class AzureBlobUrlSigner : IMediaUrlSigner
         if (blob.CanGenerateSasUri)
             return blob.GenerateSasUri(BlobSasPermissions.Read, expiresOn);
 
-        var key = await GetDelegationKeyAsync(ct);
+        var key = await GetDelegationKeyAsync(expiresOn, ct);
         if (key == null)
             return null;
+
+        // A user-delegation SAS stops working when its key expires, so never promise more than that.
+        if (expiresOn > key.SignedExpiresOn)
+            expiresOn = key.SignedExpiresOn;
 
         var builder = new BlobSasBuilder(BlobSasPermissions.Read, expiresOn)
         {
@@ -67,22 +72,35 @@ public sealed class AzureBlobUrlSigner : IMediaUrlSigner
             ? blobUri
             : new Uri(options.PublicBaseUri, blobUri.AbsolutePath);
 
-    async ValueTask<UserDelegationKey?> GetDelegationKeyAsync(CancellationToken ct)
+    async ValueTask<UserDelegationKey?> GetDelegationKeyAsync(DateTimeOffset neededUntil, CancellationToken ct)
     {
+        // The cached key must outlive the SAS about to be minted from it, not just the next few minutes
+        // (bounded by the longest key the service will issue; the caller clamps the SAS to the key).
+        var longest = DateTimeOffset.UtcNow.Add(MaxDelegationKeyLifetime).Subtract(ClockSkew);
+        if (neededUntil > longest)
+            neededUntil = longest;
+
         var current = delegationKey;
-        if (current != null && current.SignedExpiresOn > DateTimeOffset.UtcNow.Add(ClockSkew))
+        if (current != null && current.SignedExpiresOn >= neededUntil)
             return current;
 
         await delegationLock.WaitAsync(ct);
         try
         {
             current = delegationKey;
-            if (current != null && current.SignedExpiresOn > DateTimeOffset.UtcNow.Add(ClockSkew))
+            if (current != null && current.SignedExpiresOn >= neededUntil)
                 return current;
 
+            var now = DateTimeOffset.UtcNow;
+            var keyExpiresOn = neededUntil.Add(ClockSkew);
+            if (keyExpiresOn < now.Add(DelegationKeyLifetime))
+                keyExpiresOn = now.Add(DelegationKeyLifetime);
+            if (keyExpiresOn > now.Add(MaxDelegationKeyLifetime))
+                keyExpiresOn = now.Add(MaxDelegationKeyLifetime);
+
             var response = await containers.Service.GetUserDelegationKeyAsync(
-                DateTimeOffset.UtcNow.Subtract(ClockSkew),
-                DateTimeOffset.UtcNow.Add(DelegationKeyLifetime),
+                now.Subtract(ClockSkew),
+                keyExpiresOn,
                 ct);
 
             delegationKey = response.Value;

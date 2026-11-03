@@ -1,3 +1,4 @@
+using Azure;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Microsoft.EntityFrameworkCore;
@@ -111,8 +112,16 @@ public sealed class AzureBlobMediaStore<TContext> : IMediaStore where TContext :
         // Resolve through the configured container rather than re-authenticating the stored URI: a
         // connection-string deployment has no DefaultAzureCredential to fall back on.
         var blob = containers.Container.GetBlobClient(AzureBlobNaming.BlobNameFor(item));
-        var download = await blob.DownloadStreamingAsync(cancellationToken: ct);
-        return (item, download.Value.Content);
+        try
+        {
+            var download = await blob.DownloadStreamingAsync(cancellationToken: ct);
+            return (item, download.Value.Content);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Same contract as the local store: a row whose payload is gone is "not found", not a 500.
+            return null;
+        }
     }
 
     /// <summary>

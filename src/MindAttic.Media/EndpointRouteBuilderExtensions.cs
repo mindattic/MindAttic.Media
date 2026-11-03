@@ -30,14 +30,14 @@ public static class EndpointRouteBuilderExtensions
             {
                 var signed = await signer.TryCreateReadUrlAsync(meta, options.SignedUrlLifetime, http.RequestAborted);
                 if (signed != null)
-                    return Results.Redirect(signed.ToString());
+                    return Results.Redirect(signed.AbsoluteUri);
             }
 
             // Pre-signer rows (and any backend that stores a plain public URL) still redirect as before.
             if (Uri.TryCreate(meta.BlobUri, UriKind.Absolute, out var absolute)
                 && (absolute.Scheme == Uri.UriSchemeHttps || absolute.Scheme == Uri.UriSchemeHttp))
             {
-                return Results.Redirect(absolute.ToString());
+                return Results.Redirect(absolute.AbsoluteUri);
             }
 
             var result = await store.GetAsync(uid, http.RequestAborted);

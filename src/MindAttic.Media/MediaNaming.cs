@@ -7,6 +7,6 @@ public static class MediaNaming
         var name = Path.GetFileName(fileName);
         foreach (var c in Path.GetInvalidFileNameChars())
             name = name.Replace(c, '_');
-        return string.IsNullOrWhiteSpace(name) ? "file" : name;
+        return string.IsNullOrWhiteSpace(name) || name is "." or ".." ? "file" : name;
     }
 }
