@@ -45,12 +45,28 @@ public sealed class AzureBlobMediaStore<TContext> : IMediaStore where TContext :
         var writeOptions = new BlobOpenWriteOptions
         {
             BufferSize = options.UploadBlockSizeBytes,
-            HttpHeaders = new BlobHttpHeaders { ContentType = contentType }
+            // Active content (HTML, SVG, script...) downloads instead of rendering when fetched straight
+            // from storage too (public container, CDN, custom domain).
+            HttpHeaders = new BlobHttpHeaders
+            {
+                ContentType = contentType,
+                ContentDisposition = MediaContentTypes.IsActive(contentType) ? "attachment" : null
+            }
         };
 
-        await using (var destination = await blob.OpenWriteAsync(overwrite: true, writeOptions, ct))
+        try
         {
-            (sha256, size) = await MediaStreams.CopyAndHashAsync(content, destination, options.CopyBufferSize, ct);
+            await using (var destination = await blob.OpenWriteAsync(overwrite: true, writeOptions, ct))
+            {
+                (sha256, size) = await MediaStreams.CopyAndHashAsync(content, destination, options.CopyBufferSize, ct);
+            }
+        }
+        catch
+        {
+            // Disposing the write stream commits whatever blocks were staged, so a failed or cancelled
+            // copy would otherwise leave a truncated blob that no catalog row points at.
+            await DeleteOrphanAsync(blob);
+            throw;
         }
 
         var item = new MediaItem
@@ -73,8 +89,34 @@ public sealed class AzureBlobMediaStore<TContext> : IMediaStore where TContext :
         };
 
         context.Set<MediaItem>().Add(item);
-        await context.SaveChangesAsync(ct);
+        try
+        {
+            await context.SaveChangesAsync(ct);
+        }
+        catch
+        {
+            // No row was saved, so the blob is unreachable: remove it, and detach the unsaved row so a
+            // retry on this context does not insert it a second time.
+            context.Entry(item).State = EntityState.Detached;
+            await DeleteOrphanAsync(blob);
+            throw;
+        }
         return item;
+    }
+
+    /// <summary>
+    /// Best-effort removal of a blob this upload just wrote. Not a delete of catalogued media
+    /// (HOUSE-LAW-2 covers rows): the blob's uid is fresh and no row ever referenced it. Runs without
+    /// the caller's token, which is often the reason the upload failed.
+    /// </summary>
+    static async Task DeleteOrphanAsync(BlobClient blob)
+    {
+        try
+        {
+            await blob.DeleteIfExistsAsync(DeleteSnapshotsOption.IncludeSnapshots, cancellationToken: CancellationToken.None);
+        }
+        catch (RequestFailedException) { }
+        catch (OperationCanceledException) { }
     }
 
     public async Task<IReadOnlyList<MediaItem>> ListAsync(

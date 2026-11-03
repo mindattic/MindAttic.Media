@@ -40,8 +40,19 @@ public sealed class AzureBlobUrlSigner : IMediaUrlSigner
 
         var expiresOn = DateTimeOffset.UtcNow.Add(lifetime);
 
+        // Active content (HTML, SVG, script...) is forced to download even off the blob origin, which
+        // a custom-domain PublicBaseUri or CDN can put next to the app. This covers rows uploaded
+        // before the store began stamping Content-Disposition on the blob itself.
+        var disposition = MediaContentTypes.IsActive(item.ContentType) ? "attachment" : null;
+
         if (blob.CanGenerateSasUri)
-            return blob.GenerateSasUri(BlobSasPermissions.Read, expiresOn);
+            return blob.GenerateSasUri(new BlobSasBuilder(BlobSasPermissions.Read, expiresOn)
+            {
+                BlobContainerName = blob.BlobContainerName,
+                BlobName = blob.Name,
+                Resource = "b",
+                ContentDisposition = disposition
+            });
 
         var key = await GetDelegationKeyAsync(expiresOn, ct);
         if (key == null)
@@ -57,7 +68,8 @@ public sealed class AzureBlobUrlSigner : IMediaUrlSigner
             BlobName = blob.Name,
             Resource = "b",
             StartsOn = DateTimeOffset.UtcNow.Subtract(ClockSkew),
-            ContentType = item.ContentType
+            ContentType = item.ContentType,
+            ContentDisposition = disposition
         };
 
         var uri = new UriBuilder(blob.Uri)

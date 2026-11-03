@@ -42,11 +42,20 @@ public sealed class LocalDiskMediaStore<TContext> : IMediaStore where TContext :
             return File.Create(path);
         });
 
-        await using (sink)
+        try
         {
-            (sha256, size) = await MediaStreams.CopyAndHashAsync(content, sink, options.CopyBufferSize, ct);
-            inlineBytes = sink.InlineBytes;
-            blobUri = sink.Spilled ? path : null;
+            await using (sink)
+            {
+                (sha256, size) = await MediaStreams.CopyAndHashAsync(content, sink, options.CopyBufferSize, ct);
+                inlineBytes = sink.InlineBytes;
+                blobUri = sink.Spilled ? path : null;
+            }
+        }
+        catch
+        {
+            // A cancelled or failed copy must not leave a truncated spill file with no catalog row.
+            DeleteSpill(path);
+            throw;
         }
 
         var item = new MediaItem
@@ -69,8 +78,33 @@ public sealed class LocalDiskMediaStore<TContext> : IMediaStore where TContext :
         };
 
         context.Set<MediaItem>().Add(item);
-        await context.SaveChangesAsync(ct);
+        try
+        {
+            await context.SaveChangesAsync(ct);
+        }
+        catch
+        {
+            // No row was saved, so nothing will ever reference the file: remove it, and detach the
+            // unsaved row so a retry on this context does not try to insert it a second time.
+            context.Entry(item).State = EntityState.Detached;
+            if (blobUri != null) DeleteSpill(path);
+            throw;
+        }
         return item;
+    }
+
+    /// <summary>Best-effort removal of an orphaned spill file and its per-upload <c>{uid}</c> folder.</summary>
+    static void DeleteSpill(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+            var dir = Path.GetDirectoryName(path);
+            if (dir != null && Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any())
+                Directory.Delete(dir);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     public async Task<IReadOnlyList<MediaItem>> ListAsync(

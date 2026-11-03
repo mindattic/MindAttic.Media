@@ -141,6 +141,36 @@ public class MediaEndpointTests
         Assert.That(response.Content.Headers.ContentDisposition.FileName, Does.Contain("bundle.zip"));
     }
 
+    [TestCase("page.html", "text/html; charset=utf-8")]
+    [TestCase("logo.svg", "image/svg+xml")]
+    [TestCase("feed.xml", "application/rss+xml")]
+    public async Task ActiveContentIsSandboxedAndDownloaded(string fileName, string contentType)
+    {
+        await StartAsync();
+        var item = await SeedAsync("<script>alert(1)</script>"u8.ToArray(), fileName, contentType);
+
+        var response = await client.GetAsync($"/_media/{item.Uid}");
+
+        Assert.Multiple(() =>
+        {
+            Assert.That(response.Content.Headers.ContentDisposition!.DispositionType, Is.EqualTo("attachment"));
+            Assert.That(response.Headers.GetValues("X-Content-Type-Options"), Does.Contain("nosniff"));
+            Assert.That(string.Join(",", response.Headers.GetValues("Content-Security-Policy")), Does.StartWith("sandbox"));
+        });
+    }
+
+    [Test]
+    public async Task PassiveInlineTypeStillGetsNosniff()
+    {
+        await StartAsync();
+        var item = await SeedAsync([1, 2, 3], "note.txt", "text/plain");
+
+        var response = await client.GetAsync($"/_media/{item.Uid}");
+
+        Assert.That(response.Content.Headers.ContentDisposition!.DispositionType, Is.EqualTo("inline"));
+        Assert.That(response.Headers.GetValues("X-Content-Type-Options"), Does.Contain("nosniff"));
+    }
+
     [Test]
     public async Task UnknownUidIs404()
     {

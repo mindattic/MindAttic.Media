@@ -22,6 +22,25 @@ public class MediaNamingTests
         Assert.That(MediaNaming.SanitizeFileName(input), Is.EqualTo(expected));
     }
 
+    [TestCase(@"C:\videos\clip.mp4", "clip.mp4")]
+    [TestCase(@"..\..\secrets.env", "secrets.env")]
+    [TestCase("C:clip.mp4", "C_clip.mp4")]
+    public void SanitizesWindowsPathsTheSameOnEveryOs(string input, string expected)
+    {
+        Assert.That(MediaNaming.SanitizeFileName(input), Is.EqualTo(expected));
+    }
+
+    [TestCase("clip.mp4")]
+    [TestCase(@"C:\videos\clip.mp4")]
+    [TestCase("bad*name?.png")]
+    [TestCase("..")]
+    public void LegacySanitizerLeavesPortableNamesUnchanged(string input)
+    {
+        var portable = MediaNaming.SanitizeFileName(input);
+        Assert.That(MediaNaming.LegacySanitizeFileName(portable), Is.EqualTo(portable),
+            "existing-row blob paths are rebuilt with the legacy sanitizer; new names must survive it");
+    }
+
     [TestCase("")]
     [TestCase("   ")]
     [TestCase("/")]

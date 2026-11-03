@@ -15,6 +15,9 @@ public static class EndpointRouteBuilderExtensions
     {
         app.MapGet("/_media/{uid:guid}", async (Guid uid, HttpContext http) =>
         {
+            // Every response from this endpoint, redirects and 404s included.
+            http.Response.Headers.XContentTypeOptions = "nosniff";
+
             var store = http.RequestServices.GetRequiredService<IMediaStore>();
             var options = http.RequestServices.GetRequiredService<IOptions<MediaStoreOptions>>().Value;
 
@@ -46,8 +49,19 @@ public static class EndpointRouteBuilderExtensions
 
             var (_, stream) = result.Value;
 
-            var inline = InlinePrefixes.Any(p => meta.ContentType.StartsWith(p, StringComparison.OrdinalIgnoreCase))
-                || meta.ContentType.Equals("application/pdf", StringComparison.OrdinalIgnoreCase);
+            // The content type is whatever the uploader claimed, served from the app's own origin, so
+            // anything a browser would execute (HTML, SVG, XML, script) must never render here: it is
+            // forced to download and sandboxed in case a client ignores the disposition, and nosniff
+            // stops a browser from second-guessing a harmless type into an active one.
+            var mediaType = MediaContentTypes.Normalize(meta.ContentType);
+            var active = mediaType == null || MediaContentTypes.IsActive(mediaType);
+
+            var inline = !active
+                && (InlinePrefixes.Any(p => mediaType!.StartsWith(p, StringComparison.Ordinal))
+                    || mediaType == "application/pdf");
+
+            if (active)
+                http.Response.Headers.ContentSecurityPolicy = MediaContentTypes.SandboxPolicy;
 
             if (options.CacheMaxAgeSeconds > 0)
                 http.Response.Headers.CacheControl = $"private, max-age={options.CacheMaxAgeSeconds}";
@@ -59,7 +73,7 @@ public static class EndpointRouteBuilderExtensions
 
             return Results.Stream(
                 stream,
-                contentType: meta.ContentType,
+                contentType: mediaType == null ? "application/octet-stream" : meta.ContentType,
                 fileDownloadName: inline ? null : meta.FileName,
                 lastModified: DateTime.SpecifyKind(meta.ModifiedUtc, DateTimeKind.Utc),
                 entityTag: etag,
