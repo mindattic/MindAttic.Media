@@ -36,3 +36,7 @@ _Nothing recorded yet._
 | M.MDIA-T13 | 2026-10-20 | docs | open | Publish MindAttic.Media docs to GitHub Pages via the shared Agency DocFX pipeline: run adopt-docs-site.ps1 (README.md as home page, docs/*.md as articles, API reference only where the code builds in CI), enable Pages with build_type=workflow, set the repo homepage URL, retire tools/build-readme.ps1 and README.htm, confirm the docs Actions run is green and https://mindattic.github.io/MindAttic.Media/ returns 200. Depends on MAT-T8. | — |
 | M.MDIA-T14 | 2026-10-22 | docs | closed | Update USER_STORIES.md | — |
 | M.MDIA-T15 | 2026-10-24 | docs | closed | Update USER_STORIES.md | — |
+| M.MDIA-T16 | 2026-11-02 | docs | open | Adopt MindAttic.Agency docs-site pipeline, publish README to GitHub Pages (HOUSE-LAW-14) | — |
+| M.MDIA-T17 | 2026-11-02 | fix | closed | Bughunt sweep, two passes: find and fix real bugs across tracked source (user request 2026-11-02) | — |
+| M.MDIA-T18 | 2026-11-02 | fix | closed | Fix the open items the 2026-11-02 bughunt left for decision (stored XSS headers, Pkcs pin, SanitizeFileName on Linux, partial upload cleanup) | — |
+| M.MDIA-T19 | 2026-11-10 | chore | closed | Crash recovery: commit the command-catalog sync (.agent/commands/*.md) and regenerated docs/USER_STORIES.md left uncommitted by the session crash | — |
